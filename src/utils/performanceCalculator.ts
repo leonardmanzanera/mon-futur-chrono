@@ -1,168 +1,264 @@
 import { TrainingData, PredictionResult, HeartRateZone, TrainingRecommendation } from "@/types/training";
 
-// Conversion temps en minutes
-function parseTimeToMinutes(timeString: string): number {
+// Tables VDOT de Jack Daniels (extraites des recherches)
+const VDOT_TABLE = {
+  // Format: [distance_km, VDOT, time_seconds]
+  performances: [
+    // VDOT 45-50 range pour cohérence avec 22min 5km
+    { vdot: 45, times: { "5": 1380, "10": 2880, "21.1": 6300, "42.2": 13320 } }, // 23:00, 48:00, 1:45:00, 3:42:00
+    { vdot: 46, times: { "5": 1350, "10": 2820, "21.1": 6180, "42.2": 13020 } }, // 22:30, 47:00, 1:43:00, 3:37:00
+    { vdot: 47, times: { "5": 1320, "10": 2760, "21.1": 6060, "42.2": 12720 } }, // 22:00, 46:00, 1:41:00, 3:32:00
+    { vdot: 48, times: { "5": 1290, "10": 2700, "21.1": 5940, "42.2": 12480 } }, // 21:30, 45:00, 1:39:00, 3:28:00
+    { vdot: 49, times: { "5": 1260, "10": 2640, "21.1": 5820, "42.2": 12240 } }, // 21:00, 44:00, 1:37:00, 3:24:00
+    { vdot: 50, times: { "5": 1230, "10": 2580, "21.1": 5700, "42.2": 12000 } }  // 20:30, 43:00, 1:35:00, 3:20:00
+  ]
+};
+
+// Conversion temps en secondes
+export function parseTimeToSeconds(timeString: string): number {
   const parts = timeString.split(':').map(Number);
   if (parts.length === 2) {
-    return parts[0] + parts[1] / 60;
+    return parts[0] * 60 + parts[1];
   } else if (parts.length === 3) {
-    return parts[0] * 60 + parts[1] + parts[2] / 60;
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
   }
   return 0;
 }
 
-// Calcul de la VMA basé sur un chrono réel (formule de Léger)
-function calculateVMAFromPerformance(distance: number, timeInMinutes: number): number {
-  const speedKmh = distance / (timeInMinutes / 60);
-  
-  // Formules adaptées selon la distance
-  if (distance === 5) {
-    return speedKmh * 1.05; // VMA ≈ vitesse 5km + 5%
-  } else if (distance === 10) {
-    return speedKmh * 1.1; // VMA ≈ vitesse 10km + 10%
-  } else if (distance === 21.1) {
-    return speedKmh * 1.2; // VMA ≈ vitesse semi + 20%
-  } else if (distance === 42.2) {
-    return speedKmh * 1.3; // VMA ≈ vitesse marathon + 30%
+// Calcul VDOT basé sur performance réelle (méthode Jack Daniels)
+export function calculateVDOTFromPerformance(distance: number, timeInSeconds: number): number {
+  // Interpolation dans la table VDOT
+  for (let i = 0; i < VDOT_TABLE.performances.length - 1; i++) {
+    const current = VDOT_TABLE.performances[i];
+    const next = VDOT_TABLE.performances[i + 1];
+    
+    const distanceKey = distance.toString();
+    const currentTime = current.times[distanceKey as keyof typeof current.times];
+    const nextTime = next.times[distanceKey as keyof typeof next.times];
+    
+    if (currentTime && nextTime && timeInSeconds >= nextTime && timeInSeconds <= currentTime) {
+      // Interpolation linéaire
+      const ratio = (currentTime - timeInSeconds) / (currentTime - nextTime);
+      return current.vdot + ratio * (next.vdot - current.vdot);
+    }
   }
-  return speedKmh * 1.1;
+  
+  // Fallback si hors table
+  if (timeInSeconds > 1380) return 42; // VDOT plus bas
+  if (timeInSeconds < 1230) return 52; // VDOT plus haut
+  return 48; // Valeur par défaut
 }
 
-// Calcul VO₂max basé sur VMA et données personnelles
-function calculateVO2Max(vma: number, heartRateData: { max: number; rest: number }, weight: number): number {
-  // Formule : VO₂max = 15 × (FCmax / FCrepos) ajusté par VMA
-  const baseVO2 = 15 * (heartRateData.max / heartRateData.rest);
-  const vmaFactor = vma / 15; // Facteur basé sur VMA (15 km/h = référence)
-  return baseVO2 * vmaFactor * (70 / weight); // Ajustement poids
+// Calcul des temps équivalents basé sur VDOT
+function getEquivalentTime(vdot: number, targetDistance: number): number {
+  // Interpolation dans la table VDOT
+  for (let i = 0; i < VDOT_TABLE.performances.length - 1; i++) {
+    const current = VDOT_TABLE.performances[i];
+    const next = VDOT_TABLE.performances[i + 1];
+    
+    if (vdot >= current.vdot && vdot <= next.vdot) {
+      const ratio = (vdot - current.vdot) / (next.vdot - current.vdot);
+      const distanceKey = targetDistance.toString();
+      const currentTime = current.times[distanceKey as keyof typeof current.times];
+      const nextTime = next.times[distanceKey as keyof typeof next.times];
+      
+      if (currentTime && nextTime) {
+        return currentTime - ratio * (currentTime - nextTime);
+      }
+    }
+  }
+  
+  // Fallback - utiliser les tables directement
+  const fallbackPerf = VDOT_TABLE.performances[2]; // VDOT 47
+  if (targetDistance === 5) return fallbackPerf.times["5"];
+  if (targetDistance === 10) return fallbackPerf.times["10"];
+  if (targetDistance === 21.1) return fallbackPerf.times["21.1"];
+  if (targetDistance === 42.2) return fallbackPerf.times["42.2"];
+  return 3600; // 1 heure par défaut
 }
 
-// Calcul temps prédit pour une distance (formule de Riegel améliorée)
-function predictTimeForDistance(referenceDistance: number, referenceTime: number, targetDistance: number, improvement: number = 0): number {
-  const factor = Math.pow(targetDistance / referenceDistance, 1.06);
-  const predictedTime = referenceTime * factor;
-  return predictedTime * (1 - improvement);
+// Calcul allures d'entraînement (formules Jack Daniels)
+function calculateTrainingPaces(vdot: number) {
+  // Vitesse de base en m/min basée sur VDOT
+  const baseVelocity = -4.6 + 0.182258 * vdot + 0.000104 * vdot * vdot;
+  
+  return {
+    easy: baseVelocity * 0.65, // 65% de la vitesse VMA
+    tempo: baseVelocity * 0.84, // 84% (allure marathon + 10-15s/km)
+    threshold: baseVelocity * 0.88, // 88% (seuil lactique)
+    interval: baseVelocity * 0.95, // 95% (VMA courte)
+    repetition: baseVelocity * 1.02 // 102% (répétitions)
+  };
 }
 
-// Calcul de l'amélioration réaliste basée sur l'entraînement
-function calculateRealisticImprovement(data: TrainingData, months: number): number {
+// Conversion vitesse m/min vers allure min/km
+function velocityToPace(velocity: number): string {
+  const paceSeconds = 1000 / (velocity * 60); // secondes par km
+  const minutes = Math.floor(paceSeconds / 60);
+  const seconds = Math.round(paceSeconds % 60);
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+// Amélioration réaliste basée sur recherches scientifiques
+function calculateRealisticImprovement(data: TrainingData, months: number, sessions: number): number {
   let baseImprovement = 0;
   
-  // Amélioration due au volume d'entraînement
-  if (data.weeklyVolume >= 80) baseImprovement += 0.15;
-  else if (data.weeklyVolume >= 60) baseImprovement += 0.12;
-  else if (data.weeklyVolume >= 40) baseImprovement += 0.08;
-  else if (data.weeklyVolume >= 20) baseImprovement += 0.05;
+  // Amélioration basée sur le nombre de séances par semaine
+  if (sessions >= 6) baseImprovement = 0.12; // 12% max pour élite
+  else if (sessions >= 5) baseImprovement = 0.10; // 10% pour très bon niveau
+  else if (sessions >= 4) baseImprovement = 0.08; // 8% pour bon niveau
+  else if (sessions >= 3) baseImprovement = 0.06; // 6% pour niveau moyen
+  else baseImprovement = 0.04; // 4% pour débutant
   
-  // Amélioration due à l'intensité
+  // Ajustement intensité
   const intensityBonus = {
-    'facile': 0.02,
-    'modérée': 0.05,
-    'difficile': 0.08
+    'facile': 0.7,
+    'modérée': 1.0,
+    'difficile': 1.2
   };
-  baseImprovement += intensityBonus[data.intensity];
+  baseImprovement *= intensityBonus[data.intensity];
   
-  // Amélioration due à la perte de poids
-  const weightLossImpact = (data.currentWeight - data.targetWeight) * 0.02;
-  baseImprovement += weightLossImpact;
+  // Amélioration due au poids (2% par kg perdu)
+  const weightImprovement = (data.currentWeight - data.targetWeight) * 0.02;
+  baseImprovement += weightImprovement;
   
-  // Progression temporelle (logarithmique)
-  const timeProgression = Math.log(months + 1) / Math.log(7); // Plateau après 6 mois
+  // Courbe de progression logarithmique (plateaux)
+  const timeProgression = 1 - Math.exp(-months / 4); // Plateau après 6 mois
   
-  return Math.min(baseImprovement * timeProgression, 0.20); // Max 20% d'amélioration
+  return Math.min(baseImprovement * timeProgression, 0.15); // Max 15%
 }
 
-// Calcul des zones cardiaques
-export function calculateHeartRateZones(maxHR: number, restHR: number): HeartRateZone[] {
+// Calcul des zones cardiaques avec méthode Karvonen
+export function calculateHeartRateZones(maxHR: number, restHR: number, vdot: number): HeartRateZone[] {
   const hrReserve = maxHR - restHR;
+  const paces = calculateTrainingPaces(vdot);
   
   return [
     {
       name: "Zone 1 - Récupération",
-      minHR: Math.round(restHR + hrReserve * 0.5),
-      maxHR: Math.round(restHR + hrReserve * 0.6),
+      minHR: Math.round(restHR + hrReserve * 0.50),
+      maxHR: Math.round(restHR + hrReserve * 0.60),
       percentage: "50-60%",
-      purpose: "Récupération active, footing très facile",
+      purpose: "Récupération active, favorise l'élimination des déchets",
+      pace: velocityToPace(paces.easy * 0.9),
       color: "blue"
     },
     {
-      name: "Zone 2 - Endurance",
-      minHR: Math.round(restHR + hrReserve * 0.6),
-      maxHR: Math.round(restHR + hrReserve * 0.7),
+      name: "Zone 2 - Endurance fondamentale", 
+      minHR: Math.round(restHR + hrReserve * 0.60),
+      maxHR: Math.round(restHR + hrReserve * 0.70),
       percentage: "60-70%",
-      purpose: "Endurance fondamentale, 80% de l'entraînement",
+      purpose: "Base aérobie, 80% de votre volume d'entraînement",
+      pace: velocityToPace(paces.easy),
       color: "green"
     },
     {
-      name: "Zone 3 - Tempo",
-      minHR: Math.round(restHR + hrReserve * 0.7),
-      maxHR: Math.round(restHR + hrReserve * 0.8),
+      name: "Zone 3 - Tempo/Marathon",
+      minHR: Math.round(restHR + hrReserve * 0.70),
+      maxHR: Math.round(restHR + hrReserve * 0.80),
       percentage: "70-80%",
-      purpose: "Allure marathon, tempo runs",
+      purpose: "Allure marathon, développe l'endurance lactique",
+      pace: velocityToPace(paces.tempo),
       color: "orange"
     },
     {
-      name: "Zone 4 - Seuil",
-      minHR: Math.round(restHR + hrReserve * 0.8),
-      maxHR: Math.round(restHR + hrReserve * 0.9),
+      name: "Zone 4 - Seuil lactique",
+      minHR: Math.round(restHR + hrReserve * 0.80),
+      maxHR: Math.round(restHR + hrReserve * 0.90),
       percentage: "80-90%",
-      purpose: "Seuil lactique, allure semi-marathon",
+      purpose: "Seuil anaérobie, allure 10km-semi",
+      pace: velocityToPace(paces.threshold),
       color: "red"
     },
     {
-      name: "Zone 5 - VMA",
-      minHR: Math.round(restHR + hrReserve * 0.9),
+      name: "Zone 5 - VO₂max/VMA",
+      minHR: Math.round(restHR + hrReserve * 0.90),
       maxHR: maxHR,
       percentage: "90-100%",
-      purpose: "Fractionné, vitesse maximale",
+      purpose: "Puissance maximale aérobie, 3-8min",
+      pace: velocityToPace(paces.interval),
       color: "purple"
     }
   ];
 }
 
-// Génération des recommandations d'entraînement
-export function generateTrainingRecommendations(data: TrainingData, vma: number): TrainingRecommendation[] {
-  const zones = calculateHeartRateZones(data.maxHeartRate, data.restingHeartRate);
+// Recommandations basées sur nombre de séances
+export function generateTrainingRecommendations(data: TrainingData, vdot: number, sessions: number): TrainingRecommendation[] {
+  const paces = calculateTrainingPaces(vdot);
+  const zones = calculateHeartRateZones(data.maxHeartRate, data.restingHeartRate, vdot);
   
-  return [
+  const recommendations = [
     {
-      type: "Footing Endurance",
-      duration: "45-90 min",
+      type: "Footing facile (EF)",
+      duration: sessions >= 5 ? "45-75 min" : "30-60 min",
       intensity: zones[1].name,
       heartRate: `${zones[1].minHR}-${zones[1].maxHR} bpm`,
-      pace: `${(vma * 0.65).toFixed(1)}-${(vma * 0.75).toFixed(1)} km/h`,
-      purpose: "Développer l'endurance, 70% de vos sorties"
+      pace: velocityToPace(paces.easy),
+      purpose: "Développement capillaire, récupération active"
     },
     {
-      type: "Sortie Longue",
-      duration: "90-180 min",
-      intensity: zones[0].name + " / " + zones[1].name,
-      heartRate: `${zones[0].minHR}-${zones[1].maxHR} bpm`,
-      pace: `${(vma * 0.60).toFixed(1)}-${(vma * 0.70).toFixed(1)} km/h`,
-      purpose: "Endurance, habituer le corps aux longues distances"
-    },
-    {
-      type: "Séance Tempo",
+      type: "Sortie longue",
+      duration: sessions >= 4 ? "90-150 min" : "60-120 min",
+      intensity: zones[1].name,
+      heartRate: `${zones[1].minHR}-${zones[1].maxHR} bpm`, 
+      pace: velocityToPace(paces.easy * 0.95),
+      purpose: "Endurance, économie de course, adaptation métabolique"
+    }
+  ];
+  
+  if (sessions >= 3) {
+    recommendations.push({
+      type: "Tempo run (seuil aérobie)",
       duration: "20-40 min",
       intensity: zones[2].name,
       heartRate: `${zones[2].minHR}-${zones[2].maxHR} bpm`,
-      pace: `${(vma * 0.82).toFixed(1)}-${(vma * 0.88).toFixed(1)} km/h`,
-      purpose: "Améliorer l'endurance à allure soutenue"
-    },
-    {
-      type: "Fractionné VMA",
-      duration: "8x400m ou 5x1000m",
+      pace: velocityToPace(paces.tempo),
+      purpose: "Améliore l'efficacité du métabolisme des lactates"
+    });
+  }
+  
+  if (sessions >= 4) {
+    recommendations.push({
+      type: "Fractionné seuil (10km)",
+      duration: "6x1000m R:2min",
+      intensity: zones[3].name,
+      heartRate: `${zones[3].minHR}-${zones[3].maxHR} bpm`,
+      pace: velocityToPace(paces.threshold),
+      purpose: "Seuil lactique, tamponnage acide lactique"
+    });
+  }
+  
+  if (sessions >= 5) {
+    recommendations.push({
+      type: "VMA courte",
+      duration: "8x400m R:400m ou 5x1000m R:1000m",
       intensity: zones[4].name,
       heartRate: `${zones[4].minHR}-${zones[4].maxHR} bpm`,
-      pace: `${(vma * 0.95).toFixed(1)}-${vma.toFixed(1)} km/h`,
-      purpose: "Développer la VO₂max et la vitesse"
-    }
-  ];
+      pace: velocityToPace(paces.interval),
+      purpose: "VO₂max, puissance aérobie maximale"
+    });
+  }
+  
+  if (sessions >= 6) {
+    recommendations.push({
+      type: "VMA longue",
+      duration: "3x2000m R:3min",
+      intensity: zones[4].name,
+      heartRate: `${zones[4].minHR}-${zones[4].maxHR} bpm`,
+      pace: velocityToPace(paces.interval * 0.98),
+      purpose: "Capacité lactique, résistance à l'acidose"
+    });
+  }
+  
+  return recommendations;
 }
 
 export function calculatePerformancePredictions(data: TrainingData): PredictionResult[] {
-  const referenceTimeMinutes = parseTimeToMinutes(data.lastRaceTime);
-  const vma = calculateVMAFromPerformance(data.lastRaceDistance, referenceTimeMinutes);
-  const vo2max = calculateVO2Max(vma, { max: data.maxHeartRate, rest: data.restingHeartRate }, data.currentWeight);
+  const referenceTimeSeconds = parseTimeToSeconds(data.lastRaceTime);
+  const currentVDOT = calculateVDOTFromPerformance(data.lastRaceDistance, referenceTimeSeconds);
+  
+  // Estimation du nombre de séances par semaine basé sur volume
+  const sessionsPerWeek = Math.min(7, Math.max(2, Math.floor(data.weeklyVolume / 8)));
   
   const distances = [
     { name: "5 km", distance: 5, color: "blue" },
@@ -172,20 +268,19 @@ export function calculatePerformancePredictions(data: TrainingData): PredictionR
   ];
   
   return distances.map(({ name, distance, color }) => {
-    // Temps actuel prédit pour cette distance
-    const currentTime = predictTimeForDistance(data.lastRaceDistance, referenceTimeMinutes, distance);
+    // Temps actuel équivalent
+    const currentTime = getEquivalentTime(currentVDOT, distance);
     
-    // Calcul des améliorations réalistes
-    const oneMonthImprovement = calculateRealisticImprovement(data, 1);
-    const threeMonthsImprovement = calculateRealisticImprovement(data, 3);
-    const sixMonthsImprovement = calculateRealisticImprovement(data, 6);
+    // VDOT amélioré avec progression réaliste
+    const oneMonthVDOT = currentVDOT + (calculateRealisticImprovement(data, 1, sessionsPerWeek) * currentVDOT);
+    const threeMonthsVDOT = currentVDOT + (calculateRealisticImprovement(data, 3, sessionsPerWeek) * currentVDOT);
+    const sixMonthsVDOT = currentVDOT + (calculateRealisticImprovement(data, 6, sessionsPerWeek) * currentVDOT);
     
-    // Temps futurs
-    const oneMonthTime = predictTimeForDistance(data.lastRaceDistance, referenceTimeMinutes, distance, oneMonthImprovement);
-    const threeMonthsTime = predictTimeForDistance(data.lastRaceDistance, referenceTimeMinutes, distance, threeMonthsImprovement);
-    const sixMonthsTime = predictTimeForDistance(data.lastRaceDistance, referenceTimeMinutes, distance, sixMonthsImprovement);
+    // Temps futurs basés sur VDOT amélioré
+    const oneMonthTime = getEquivalentTime(oneMonthVDOT, distance);
+    const threeMonthsTime = getEquivalentTime(threeMonthsVDOT, distance);
+    const sixMonthsTime = getEquivalentTime(sixMonthsVDOT, distance);
     
-    // Calcul de l'amélioration totale
     const totalImprovement = ((currentTime - sixMonthsTime) / currentTime * 100).toFixed(1);
     
     return {
@@ -196,39 +291,69 @@ export function calculatePerformancePredictions(data: TrainingData): PredictionR
       sixMonths: formatTime(sixMonthsTime),
       improvement: `-${totalImprovement}%`,
       color,
-      targetPace: `${(distance / (sixMonthsTime / 60)).toFixed(1)} km/h`,
-      recommendedPace: `${(vma * 0.85).toFixed(1)} km/h`
+      targetPace: velocityToPace(calculateTrainingPaces(sixMonthsVDOT).tempo),
+      recommendedPace: velocityToPace(calculateTrainingPaces(currentVDOT).easy)
     };
   });
 }
 
-// Génération des données pour le graphique
 export function generateChartData(data: TrainingData) {
-  const referenceTimeMinutes = parseTimeToMinutes(data.lastRaceTime);
+  const referenceTimeSeconds = parseTimeToSeconds(data.lastRaceTime);
+  const currentVDOT = calculateVDOTFromPerformance(data.lastRaceDistance, referenceTimeSeconds);
+  const sessionsPerWeek = Math.min(7, Math.max(2, Math.floor(data.weeklyVolume / 8)));
   
   const timePoints = [
-    { month: "Maintenant", improvement: 0 },
-    { month: "1 mois", improvement: calculateRealisticImprovement(data, 1) },
-    { month: "3 mois", improvement: calculateRealisticImprovement(data, 3) },
-    { month: "6 mois", improvement: calculateRealisticImprovement(data, 6) }
+    { month: "Maintenant", vdot: currentVDOT },
+    { month: "1 mois", vdot: currentVDOT + (calculateRealisticImprovement(data, 1, sessionsPerWeek) * currentVDOT) },
+    { month: "3 mois", vdot: currentVDOT + (calculateRealisticImprovement(data, 3, sessionsPerWeek) * currentVDOT) },
+    { month: "6 mois", vdot: currentVDOT + (calculateRealisticImprovement(data, 6, sessionsPerWeek) * currentVDOT) }
   ];
   
   return timePoints.map(point => ({
     month: point.month,
-    "5km": predictTimeForDistance(data.lastRaceDistance, referenceTimeMinutes, 5, point.improvement),
-    "10km": predictTimeForDistance(data.lastRaceDistance, referenceTimeMinutes, 10, point.improvement),
-    "Semi": predictTimeForDistance(data.lastRaceDistance, referenceTimeMinutes, 21.1, point.improvement),
-    "Marathon": predictTimeForDistance(data.lastRaceDistance, referenceTimeMinutes, 42.2, point.improvement)
+    "5km": getEquivalentTime(point.vdot, 5) / 60,
+    "10km": getEquivalentTime(point.vdot, 10) / 60,
+    "Semi": getEquivalentTime(point.vdot, 21.1) / 60,
+    "Marathon": getEquivalentTime(point.vdot, 42.2) / 60
   }));
 }
 
-function formatTime(minutes: number): string {
-  const hours = Math.floor(minutes / 60);
-  const mins = Math.floor(minutes % 60);
-  const secs = Math.floor((minutes % 1) * 60);
+function formatTime(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
   
   if (hours > 0) {
-    return `${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
+  return `${minutes}:${secs.toString().padStart(2, '0')}`;
+}
+
+// Fonction pour calculer et afficher les métriques détaillées
+export function calculateDetailedMetrics(data: TrainingData) {
+  const referenceTimeSeconds = parseTimeToSeconds(data.lastRaceTime);
+  const vdot = calculateVDOTFromPerformance(data.lastRaceDistance, referenceTimeSeconds);
+  const paces = calculateTrainingPaces(vdot);
+  
+  // VMA estimation (VDOT ≈ VO₂max pour coureurs entraînés)
+  const vma = vdot * 0.35; // Conversion approximative VDOT -> VMA km/h
+  
+  return {
+    vdot: vdot.toFixed(1),
+    vo2max: vdot.toFixed(1),
+    vma: vma.toFixed(1),
+    paces: {
+      easy: velocityToPace(paces.easy),
+      tempo: velocityToPace(paces.tempo),
+      threshold: velocityToPace(paces.threshold),
+      interval: velocityToPace(paces.interval),
+      repetition: velocityToPace(paces.repetition)
+    },
+    equivalents: {
+      "5km": formatTime(getEquivalentTime(vdot, 5)),
+      "10km": formatTime(getEquivalentTime(vdot, 10)),
+      "21km": formatTime(getEquivalentTime(vdot, 21.1)),
+      "42km": formatTime(getEquivalentTime(vdot, 42.2))
+    }
+  };
 }

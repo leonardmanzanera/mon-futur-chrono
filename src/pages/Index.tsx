@@ -4,7 +4,8 @@ import { ResultsDisplay } from "@/components/ResultsDisplay";
 import { ProgressChart } from "@/components/ProgressChart";
 import { HeartRateZones } from "@/components/HeartRateZones";
 import { TrainingRecommendations } from "@/components/TrainingRecommendations";
-import { calculatePerformancePredictions, generateChartData, calculateHeartRateZones, generateTrainingRecommendations } from "@/utils/performanceCalculator";
+import { PerformanceMetrics } from "@/components/PerformanceMetrics";
+import { calculatePerformancePredictions, generateChartData, calculateHeartRateZones, generateTrainingRecommendations, parseTimeToSeconds, calculateVDOTFromPerformance, calculateDetailedMetrics } from "@/utils/performanceCalculator";
 import { TrainingData } from "@/types/training";
 
 const Index = () => {
@@ -18,12 +19,14 @@ const Index = () => {
   const handleCalculate = (data: TrainingData) => {
     const predictions = calculatePerformancePredictions(data);
     const chart = generateChartData(data);
-    const zones = calculateHeartRateZones(data.maxHeartRate, data.restingHeartRate);
     
-    // Calculer VMA pour les recommandations
-    const referenceTimeMinutes = parseTimeToMinutes(data.lastRaceTime);
-    const vma = calculateVMAFromPerformance(data.lastRaceDistance, referenceTimeMinutes);
-    const recommendations = generateTrainingRecommendations(data, vma);
+    // Calculer VDOT et sessions pour les nouveaux composants
+    const referenceTimeSeconds = parseTimeToSeconds(data.lastRaceTime);
+    const vdot = calculateVDOTFromPerformance(data.lastRaceDistance, referenceTimeSeconds);
+    const sessionsPerWeek = Math.min(7, Math.max(2, Math.floor(data.weeklyVolume / 8)));
+    
+    const zones = calculateHeartRateZones(data.maxHeartRate, data.restingHeartRate, vdot);
+    const recommendations = generateTrainingRecommendations(data, vdot, sessionsPerWeek);
     
     setResults(predictions);
     setChartData(chart);
@@ -31,23 +34,6 @@ const Index = () => {
     setTrainingRecommendations(recommendations);
     setTrainingData(data);
     setShowResults(true);
-  };
-  
-  // Fonctions utilitaires (à déplacer dans utils si besoin)
-  const parseTimeToMinutes = (timeString: string): number => {
-    const parts = timeString.split(':').map(Number);
-    if (parts.length === 2) return parts[0] + parts[1] / 60;
-    if (parts.length === 3) return parts[0] * 60 + parts[1] + parts[2] / 60;
-    return 0;
-  };
-  
-  const calculateVMAFromPerformance = (distance: number, timeInMinutes: number): number => {
-    const speedKmh = distance / (timeInMinutes / 60);
-    if (distance === 5) return speedKmh * 1.05;
-    if (distance === 10) return speedKmh * 1.1;
-    if (distance === 21.1) return speedKmh * 1.2;
-    if (distance === 42.2) return speedKmh * 1.3;
-    return speedKmh * 1.1;
   };
 
   return (
@@ -71,16 +57,11 @@ const Index = () => {
         {/* Results */}
         {showResults && trainingData && (
           <div className="max-w-6xl mx-auto space-y-12 animate-in fade-in duration-500">
+            <PerformanceMetrics data={trainingData} />
             <ResultsDisplay results={results} />
             <ProgressChart data={chartData} />
-            <HeartRateZones 
-              zones={heartRateZones} 
-              vma={calculateVMAFromPerformance(trainingData.lastRaceDistance, parseTimeToMinutes(trainingData.lastRaceTime))} 
-            />
-            <TrainingRecommendations 
-              recommendations={trainingRecommendations} 
-              weeklyVolume={trainingData.weeklyVolume} 
-            />
+            <HeartRateZones zones={heartRateZones} vma={Number(calculateDetailedMetrics(trainingData).vma)} />
+            <TrainingRecommendations recommendations={trainingRecommendations} weeklyVolume={trainingData.weeklyVolume} />
           </div>
         )}
       </div>
