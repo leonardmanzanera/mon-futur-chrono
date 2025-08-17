@@ -6,15 +6,16 @@ import { HeartRateZones } from "@/components/HeartRateZones";
 import { TrainingRecommendations } from "@/components/TrainingRecommendations";
 import { PerformanceMetrics } from "@/components/PerformanceMetrics";
 import { calculatePerformancePredictions, generateChartData, calculateHeartRateZones, generateTrainingRecommendations, parseTimeToSeconds, calculateVDOTFromPerformance, calculateDetailedMetrics } from "@/utils/performanceCalculator";
-import { TrainingData } from "@/types/training";
+import { TrainingData, PredictionResult, HeartRateZone, TrainingRecommendation } from "@/types/training";
 
 const Index = () => {
-  const [results, setResults] = useState<any[]>([]);
-  const [chartData, setChartData] = useState<any[]>([]);
-  const [heartRateZones, setHeartRateZones] = useState<any[]>([]);
-  const [trainingRecommendations, setTrainingRecommendations] = useState<any[]>([]);
+  const [results, setResults] = useState<PredictionResult[]>([]);
+  const [chartData, setChartData] = useState<Record<string, number | string>[]>([]);
+  const [heartRateZones, setHeartRateZones] = useState<HeartRateZone[]>([]);
+  const [trainingRecommendations, setTrainingRecommendations] = useState<TrainingRecommendation[]>([]);
   const [showResults, setShowResults] = useState(false);
   const [trainingData, setTrainingData] = useState<TrainingData | null>(null);
+  const [detailedMetrics, setDetailedMetrics] = useState<ReturnType<typeof calculateDetailedMetrics> | null>(null);
 
   const handleCalculate = (data: TrainingData) => {
     const predictions = calculatePerformancePredictions(data);
@@ -22,17 +23,20 @@ const Index = () => {
     
     // Calculer VDOT et sessions pour les nouveaux composants
     const referenceTimeSeconds = parseTimeToSeconds(data.lastRaceTime);
+    if (isNaN(referenceTimeSeconds)) return;
     const vdot = calculateVDOTFromPerformance(data.lastRaceDistance, referenceTimeSeconds);
     const sessionsPerWeek = Math.min(7, Math.max(2, Math.floor(data.weeklyVolume / 8)));
     
     const zones = calculateHeartRateZones(data.maxHeartRate, data.restingHeartRate, vdot);
     const recommendations = generateTrainingRecommendations(data, vdot, sessionsPerWeek);
+    const metrics = calculateDetailedMetrics(data);
     
     setResults(predictions);
     setChartData(chart);
     setHeartRateZones(zones);
     setTrainingRecommendations(recommendations);
     setTrainingData(data);
+    setDetailedMetrics(metrics);
     setShowResults(true);
   };
 
@@ -60,7 +64,9 @@ const Index = () => {
             <PerformanceMetrics data={trainingData} />
             <ResultsDisplay results={results} />
             <ProgressChart data={chartData} />
-            <HeartRateZones zones={heartRateZones} vma={Number(calculateDetailedMetrics(trainingData).vma)} />
+            {detailedMetrics && (
+              <HeartRateZones zones={heartRateZones} vma={Number(detailedMetrics.vma)} />
+            )}
             <TrainingRecommendations recommendations={trainingRecommendations} weeklyVolume={trainingData.weeklyVolume} />
           </div>
         )}

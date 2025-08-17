@@ -1,6 +1,7 @@
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { HeartRateZone } from "@/types/training";
+import { ZONE_COLORS, BADGE_COLORS } from "@/utils/colorMappings";
 
 interface HeartRateZonesProps {
   zones: HeartRateZone[];
@@ -8,28 +9,6 @@ interface HeartRateZonesProps {
 }
 
 export function HeartRateZones({ zones, vma }: HeartRateZonesProps) {
-  const getZoneColor = (color: string) => {
-    const colors = {
-      blue: "from-blue-500/20 to-blue-600/10 border-blue-500/30",
-      green: "from-green-500/20 to-green-600/10 border-green-500/30",
-      orange: "from-orange-500/20 to-orange-600/10 border-orange-500/30",
-      red: "from-red-500/20 to-red-600/10 border-red-500/30",
-      purple: "from-purple-500/20 to-purple-600/10 border-purple-500/30"
-    };
-    return colors[color as keyof typeof colors] || colors.blue;
-  };
-
-  const getBadgeColor = (color: string) => {
-    const colors = {
-      blue: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-      green: "bg-green-500/20 text-green-400 border-green-500/30",
-      orange: "bg-orange-500/20 text-orange-400 border-orange-500/30",
-      red: "bg-red-500/20 text-red-400 border-red-500/30",
-      purple: "bg-purple-500/20 text-purple-400 border-purple-500/30"
-    };
-    return colors[color as keyof typeof colors] || colors.blue;
-  };
-
   const calculatePaceForZone = (zoneName: string): string => {
     switch (zoneName) {
       case "Zone 1 - Récupération":
@@ -62,14 +41,16 @@ export function HeartRateZones({ zones, vma }: HeartRateZonesProps) {
         {zones.map((zone, index) => (
           <Card 
             key={index}
-            className={`glass-card p-6 hover-scale transition-smooth bg-gradient-to-br ${getZoneColor(zone.color)}`}
+            className={`glass-card p-6 hover-scale transition-smooth bg-gradient-to-br ${
+              ZONE_COLORS[zone.color] || ZONE_COLORS.blue
+            }`}
           >
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-bold text-foreground">
                   {zone.name}
                 </h4>
-                <Badge className={`${getBadgeColor(zone.color)} border`}>
+                <Badge className={`${BADGE_COLORS[zone.color] || BADGE_COLORS.blue} border`}>
                   {zone.percentage}
                 </Badge>
               </div>

@@ -16,13 +16,20 @@ const VDOT_TABLE = {
 
 // Conversion temps en secondes
 export function parseTimeToSeconds(timeString: string): number {
-  const parts = timeString.split(':').map(Number);
-  if (parts.length === 2) {
-    return parts[0] * 60 + parts[1];
-  } else if (parts.length === 3) {
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  const mmss = /^(\d{1,2}):(\d{2})$/;
+  const hhmmss = /^(\d{1,2}):(\d{2}):(\d{2})$/;
+
+  if (hhmmss.test(timeString)) {
+    const [, h, m, s] = timeString.match(hhmmss)!;
+    return Number(h) * 3600 + Number(m) * 60 + Number(s);
   }
-  return 0;
+
+  if (mmss.test(timeString)) {
+    const [, m, s] = timeString.match(mmss)!;
+    return Number(m) * 60 + Number(s);
+  }
+
+  return NaN;
 }
 
 // Calcul VDOT basé sur performance réelle (méthode Jack Daniels)
